@@ -21,37 +21,51 @@ export class RequestsService {
   constructor(
     @InjectRepository(CustomerRequest)
     private readonly requests: Repository<CustomerRequest>,
-    @InjectRepository(RequestNote)
-    private readonly notes: Repository<RequestNote>,
   ) {}
 
+  /**
+   * One round trip regardless of row count. Note count and latest note are
+   * correlated subqueries served by idx_request_notes_request_id_created, so we
+   * never load the notes themselves.
+   */
   async list(): Promise<RequestListItem[]> {
-    const rows = await this.requests.find({
-      order: { createdAt: 'DESC' },
-    });
+    const { entities, raw } = await this.requests
+      .createQueryBuilder('r')
+      .addSelect(
+        (qb) =>
+          qb
+            .select('COUNT(*)::int')
+            .from(RequestNote, 'n')
+            .where('n.request_id = r.id'),
+        'note_count',
+      )
+      .addSelect(
+        (qb) =>
+          qb
+            .select('n.body')
+            .from(RequestNote, 'n')
+            .where('n.request_id = r.id')
+            .orderBy('n.created_at', 'DESC')
+            .addOrderBy('n.id', 'DESC')
+            .limit(1),
+        'latest_note_body',
+      )
+      .orderBy('r.created_at', 'DESC')
+      .addOrderBy('r.id', 'DESC')
+      .getRawAndEntities();
 
-    const items: RequestListItem[] = [];
-    for (const row of rows) {
-      const notes = await this.notes.find({
-        where: { requestId: row.id },
-        order: { createdAt: 'DESC' },
-      });
-      row.notes = notes;
-
-      items.push({
-        id: row.id,
-        message: row.message,
-        status: row.status,
-        category: row.category,
-        confidence: row.confidence,
-        noteCount: notes.length,
-        latestNotePreview: notes[0]?.body ?? null,
-        createdAt: row.createdAt.toISOString(),
-        updatedAt: row.updatedAt.toISOString(),
-      });
-    }
-
-    return items;
+    // getRawAndEntities preserves row order 1:1 when there are no joins.
+    return entities.map((row, i) => ({
+      id: row.id,
+      message: row.message,
+      status: row.status,
+      category: row.category,
+      confidence: row.confidence,
+      noteCount: raw[i].note_count,
+      latestNotePreview: raw[i].latest_note_body ?? null,
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    }));
   }
 
   async getById(id: string): Promise<CustomerRequest> {
@@ -79,9 +93,5 @@ export class RequestsService {
       confidence: null,
     });
     return this.requests.save(row);
-  }
-
-  async save(request: CustomerRequest): Promise<CustomerRequest> {
-    return this.requests.save(request);
   }
 }

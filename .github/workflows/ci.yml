@@ -59,9 +59,9 @@ jobs:
       - name: Test
         run: npm test
 
+      # DATABASE_URL comes from the job env; it must point at the database the
+      # postgres service actually creates (POSTGRES_DB above).
       - name: Migrate
-        env:
-          DATABASE_URL: postgres://cami:cami@localhost:5432/cami_app
         run: npm run migration:run
 
       - name: Build
