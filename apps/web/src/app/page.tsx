@@ -21,23 +21,45 @@ export default function HomePage() {
     queryFn: fetchRequests,
   });
 
+  // Every mutation changes what the list (and possibly history) shows, so mark
+  // both stale. Returning the promise keeps the mutation pending until the
+  // refetch lands, which avoids a flash of the old value.
+  const refreshAfterWrite = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['requests'] }),
+      queryClient.invalidateQueries({ queryKey: ['history'] }),
+    ]);
+
   const createMutation = useMutation({
     mutationFn: (message: string) => createRequest(message),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['requests'] });
       setDraft('');
+      return refreshAfterWrite();
     },
   });
 
   const statusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: RequestStatus }) =>
       updateRequestStatus(id, status),
+    onSuccess: refreshAfterWrite,
   });
 
   const classifyMutation = useMutation({
     mutationFn: ({ id, message }: { id: string; message: string }) =>
       classifyMessage(message, id),
+    onSuccess: refreshAfterWrite,
   });
+
+  const busyId =
+    (statusMutation.isPending && statusMutation.variables?.id) ||
+    (classifyMutation.isPending && classifyMutation.variables?.id) ||
+    null;
+  // Only the most recent write's outcome matters; an old failure must not linger
+  // after a later success.
+  const latestWrite = [createMutation, statusMutation, classifyMutation]
+    .filter((m) => m.submittedAt > 0)
+    .sort((a, b) => b.submittedAt - a.submittedAt)[0];
+  const writeError = latestWrite?.error ?? null;
 
   if (requestsQuery.isLoading) {
     return <p className="text-slate-600">Loading requests…</p>;
@@ -113,8 +135,9 @@ export default function HomePage() {
                 </td>
                 <td className="px-4 py-3">
                   <select
-                    className="rounded border border-slate-300 bg-white px-2 py-1"
+                    className="rounded border border-slate-300 bg-white px-2 py-1 disabled:opacity-50"
                     value={row.status}
+                    disabled={busyId === row.id}
                     onChange={(e) =>
                       statusMutation.mutate({
                         id: row.id,
@@ -141,7 +164,8 @@ export default function HomePage() {
                 <td className="px-4 py-3">
                   <button
                     type="button"
-                    className="rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                    disabled={busyId === row.id}
+                    className="rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-50"
                     onClick={() =>
                       classifyMutation.mutate({ id: row.id, message: row.message })
                     }
@@ -155,8 +179,14 @@ export default function HomePage() {
         </table>
       </div>
 
-      {(statusMutation.isSuccess || classifyMutation.isSuccess) && (
-        <p className="text-sm text-slate-600">Last action reported success from the API.</p>
+      {requests.length > 25 && (
+        <p className="text-sm text-slate-500">Showing the newest 25 of {requests.length} requests.</p>
+      )}
+
+      {writeError && (
+        <p role="alert" className="text-sm text-red-700">
+          {writeError.message}
+        </p>
       )}
     </div>
   );
